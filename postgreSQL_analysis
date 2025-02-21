@@ -1,0 +1,204 @@
+--------------startup growth data--------------
+-----------------------------------------------
+CREATE TABLE startup_growth(
+	startup_name_key integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	startup_name_text text NOT NULL,
+	industry text NOT NULL,
+	funding_rnds smallint NOT NULL,
+	investment_amt numeric(15,2) NOT NULL,
+	valuation numeric(15,2) NOT NULL,
+	num_investors smallint NOT NULL,
+	country text NOT NULL,
+	year_founded int NOT NULL,
+	growth_rt numeric(6,2) NOT NULL
+);
+
+COPY startup_growth (startup_name_text,
+						industry,
+						funding_rnds,
+						investment_amt,
+						valuation,
+						num_investors,
+						country,
+						year_founded,
+						growth_rt)
+FROM '/Users/haydencwiek/Downloads/startup_growth_investment_data.csv'
+WITH (FORMAT CSV, HEADER);
+
+--reduce redundancies by normalizing startup company to the primary key--
+ALTER TABLE startup_growth
+DROP COLUMN startup_name_text;
+
+--explore diversity of industries--
+SELECT industry, count(*)
+FROM startup_growth
+GROUP BY industry
+ORDER BY count(*) DESC;
+
+SELECT seed, count(*)
+FROM startup_growth
+GROUP BY seed
+ORDER BY count(*) DESC;
+
+--add column to represent funding seed level--
+ALTER TABLE startup_growth
+ADD COLUMN seed text;
+
+UPDATE startup_growth
+SET seed = CASE WHEN funding_rnds = 1 THEN 'Seed'
+				WHEN funding_rnds = 2 THEN 'Series A'
+				WHEN funding_rnds = 3 THEN 'Series B'
+				WHEN funding_rnds = 4 THEN 'Series C'
+				WHEN funding_rnds = 5 THEN 'Series D'
+				WHEN funding_rnds >= 6 THEN 'Series E+'
+				ELSE 'NULL'
+			END;
+
+
+----------GICS top 50 stocks data-------------
+-----------------------------------------------
+--Used chatGPT to generate 50 artificial companies' to track quarterly stock
+--prices across 2024. Each company was given a Global Industry Classification
+--Standard, (or GICS) code in various sector and subsectors. Using this metric
+--we can associate performance of various start up companies to the benchmark of
+--growth created by our artificial environment of top 50 stocks.
+-----------------------------------------------
+--UPDATE: table has since been limited to a sample size of 50 stocks
+
+CREATE TABLE top200_stocks(
+	company_name TEXT NOT NULL,
+    stock_ticker TEXT NOT NULL,
+    date DATE NOT NULL,
+    gics_sector TEXT NOT NULL,
+    gics_subsector TEXT NOT NULL,
+    city TEXT NOT NULL,
+    country TEXT NOT NULL,
+    open NUMERIC(10,2) NOT NULL,
+    high NUMERIC(10,2) NOT NULL,
+    low NUMERIC(10,2) NOT NULL,
+    close NUMERIC(10,2) NOT NULL,
+    volume INTEGER NOT NULL,
+    PRIMARY KEY (company_name, stock_ticker, date)
+);
+
+COPY top200_stocks
+FROM '/Users/haydencwiek/Desktop/HealthTech Innovations,HTI,2024-01-01,He.csv'
+WITH (FORMAT CSV, HEADER);
+
+--each company should have 4 quarters of data, check for accuracy--
+SELECT DISTINCT company_name, count(*)
+FROM top200_stocks
+GROUP BY company_name
+HAVING count(*) !=4;
+
+--add column for GICS sector and sub sector--
+ALTER TABLE startup_growth
+ADD COLUMN gics_sector text;
+
+UPDATE startup_growth
+SET gics_sector = CASE WHEN industry ILIKE '%blockchain%' THEN 'Information Technology'
+				WHEN industry ILIKE '%healthtech%' THEN 'Health Care'
+				WHEN industry ILIKE '%saas%' THEN 'Information Technology'
+				WHEN industry ILIKE '%e-com%' THEN 'Consumer Discretionary'
+				WHEN industry ILIKE '%fintech%' THEN 'Financials'
+				WHEN industry ILIKE '%edtech%' THEN 'Consumer Discretionary'
+				WHEN industry ILIKE 'ai' THEN 'Information Technology'
+				WHEN industry ILIKE '%biotech%' THEN 'Health Care'
+				ELSE 'NULL'
+			END;
+
+ALTER TABLE startup_growth
+ADD COLUMN gics_subsector text;
+
+UPDATE startup_growth
+SET gics_subsector = CASE WHEN industry ILIKE '%blockchain%' THEN 'Technology Infrastructure'
+				WHEN industry ILIKE '%healthtech%' THEN 'Health Care Technology'
+				WHEN industry ILIKE '%saas%' THEN 'Application Software'
+				WHEN industry ILIKE '%e-com%' THEN 'Internet & Direct Marketing Retail'
+				WHEN industry ILIKE '%fintech%' THEN 'Diversified Financial Services'
+				WHEN industry ILIKE '%edtech%' THEN 'Application Software'
+				WHEN industry ILIKE 'ai' THEN 'Application Software'
+				WHEN industry ILIKE '%biotech%' THEN 'Biotechnology'
+				ELSE 'NULL'
+			END;
+			
+-------add rolling quarterly avg and growth columns--------
+ALTER TABLE top200_stocks
+ADD COLUMN quarterly_avg DECIMAL(10, 2);
+
+ALTER TABLE top200_stocks
+ADD COLUMN growth_rate DECIMAL(10, 2);
+
+WITH
+quarterly_avg AS(
+SELECT stock_ticker as ticker,
+		date,
+		round(
+			avg((high+low)/2)
+			OVER(
+				PARTITION BY stock_ticker
+				ORDER BY date
+					ROWS BETWEEN 3 PRECEDING AND CURRENT ROW), 0)
+		AS quarterly_avg
+FROM top200_stocks),
+
+quarterly_growth AS(
+SELECT ticker,
+    	date,
+    	quarterly_avg,
+		round((
+			(quarterly_avg - LAG(quarterly_avg)
+			OVER (PARTITION BY ticker ORDER BY date))/ LAG(quarterly_avg)
+			OVER (PARTITION BY ticker ORDER BY date)) * 100, 2)
+    	AS growth_rate
+FROM quarterly_avg)
+
+UPDATE top200_stocks t200
+SET quarterly_avg = qg.quarterly_avg,
+    growth_rate = qg.growth_rate
+FROM quarterly_growth qg
+WHERE t200.stock_ticker = qg.ticker
+  AND t200.date = qg.date;
+  
+--------top growers by industry data-----------
+-----------------------------------------------
+
+CREATE TABLE industry_growth(
+	industry TEXT NOT NULL,
+    growth NUMERIC(5,2) NOT NULL
+);
+
+INSERT INTO industry_growth
+SELECT gics_subsector,
+		round(avg(growth_rate),2) AS avg_growth
+FROM top200_stocks
+GROUP BY gics_subsector
+ORDER BY avg_growth DESC;
+
+ALTER TABLE industry_growth
+RENAME TO top200_growth_by_industry;
+
+UPDATE top200_growth_by_industry
+SET industry = 'Technology Infrastructure'
+WHERE industry = 'Software / Technology Infrastructure';
+
+UPDATE top200_growth_by_industry
+SET industry = 'Diversified Financial Services'
+WHERE industry = 'IT Services / Diversified Financial Services';
+
+ALTER TABLE top200_growth_by_industry 
+RENAME COLUMN growth TO proj_growth;
+
+
+-------joining data sets---------
+SELECT *
+FROM startup_growth AS sg
+JOIN top200_growth_by_industry AS t200
+ON sg.gics_subsector = t200.industry
+ORDER BY sg.startup_name_key;
+
+
+--export to csv--
+COPY startup_growth
+TO '/Users/haydencwiek/Desktop/startup_growth_export.csv'
+WITH (FORMAT CSV, HEADER);
