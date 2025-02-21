@@ -197,6 +197,16 @@ JOIN top200_growth_by_industry AS t200
 ON sg.gics_subsector = t200.industry
 ORDER BY sg.startup_name_key;
 
+--updating the join into the startup_growth table--
+ALTER TABLE startup_growth
+ADD COLUMN proj_growth NUMERIC (5,2);
+
+UPDATE startup_growth AS sg
+SET proj_growth = t200.proj_growth
+FROM top200_growth_by_industry AS t200
+WHERE sg.gics_subsector = t200.industry;
+
+
 
 --export to csv--
 COPY startup_growth
